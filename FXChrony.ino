@@ -2,6 +2,7 @@
 #include "BLEDevice.h"
 #include "OneButton.h"
 #include <EEPROM.h>
+#include <esp_sleep.h>
 
 #define EEPROM_SIZE 5
 
@@ -87,6 +88,8 @@ static uint8_t display_flip = 0;
 static uint8_t power_save_duration = 0;
 
 static uint32_t shot_count = 0;
+
+static uint8_t nc_counter = 0;
 
 typedef  void (* menuItemCallback_t)(uint8_t);
 typedef  void (* menuItemGenString_t)(char *);
@@ -354,9 +357,14 @@ static void notifyCallback(
 
     u8g2.sendBuffer();					
   }
+  nc_counter++;
+  nc_counter %= 5;
+  digitalWrite(PIN_LED, nc_counter == 0 ? HIGH : LOW);
 }
 
 uint8_t profile_bytes[2][5] = {{0x32, 0x32, 0x32, 0x32, 0x64},{0x17, 0x1E, 0x2D, 0x43, 0x5A}};
+
+//151-462
 
 void connectToChrony() {
   Serial.print("Forming a connection to ");
@@ -433,7 +441,6 @@ void connectToChrony() {
   u8g2.sendBuffer();					// transfer internal memory to the display
   u8g2.setPowerSave(1);
   power_saving = true;
-  digitalWrite(PIN_LED, HIGH);
 }
 
 void loop() {
@@ -485,12 +492,26 @@ void loop() {
 
 
 /* 
-  Menu
-  Profile       bow/airsoft   CO2 Pistol    Air Pistol    Air Gun UK    Air Gun FAC
-  Sensitivity   0-100%
-  Units         FPS M/S
-  Display flip  on/off 
+  Menu system
 */
+
+
+static void sleepCallback(uint8_t param)
+{
+  Serial.printf("Good bye cruel world\n");
+  u8g2.setPowerSave(1);
+  esp_deep_sleep_start();
+}
+
+static menuItem_t menu_sleep[] = {
+  { "Zzzz",  NULL, menu_sleep, NULL, NULL, sleepCallback, 0, NULL},
+};
+
+void menuItemGenStringCurSleep(char * buffer)
+{
+  sprintf(buffer, "[%s]", menu_sleep[0].menuString);
+  Serial.println(buffer);  
+}
 
 static const uint8_t power_save_duration_lut[] = {0,2,5,10};
 
@@ -634,7 +655,8 @@ static menuItem_t menu_top_level[] = {
   { "Min. Return", menuItemGenStringSensitivity, &menu_top_level[2], menu_sensitivity, menu_sensitivity, NULL, 0, menuItemGenStringCurSelSensitivity},
   { "Units",        NULL, &menu_top_level[3], menu_units,       menu_units,       NULL, 0, menuItemGenStringCurSelUnits},
   { "Display Flip", NULL, &menu_top_level[4], menu_display_flip,menu_display_flip,NULL, 0, menuItemGenStringCurDisplayFlip},
-  { "Power Save",   NULL, &menu_top_level[0], menu_power_save, menu_power_save,  NULL, 0, menuItemGenStringCurPowerSaving}
+  { "Power Save",   NULL, &menu_top_level[5], menu_power_save, menu_power_save,  NULL, 0, menuItemGenStringCurPowerSaving},
+  { "Sleep",        NULL, &menu_top_level[0], menu_sleep,      menu_sleep,        NULL, 0, menuItemGenStringCurSleep}
   
 };
 
