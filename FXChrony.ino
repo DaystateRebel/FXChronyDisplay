@@ -3,6 +3,7 @@
 #include "OneButton.h"
 #include <EEPROM.h>
 #include <esp_sleep.h>
+#include "esp_adc_cal.h"
 
 #define EEPROM_SIZE 5
 
@@ -15,6 +16,7 @@
 
 #if defined(ARDUINO_heltec_wifi_kit_32)
 U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 15, /* data=*/ 4, /* reset=*/ 16);
+static esp_adc_cal_characteristics_t adc_chars;
 #endif
 
 #if defined(ARDUINO_LOLIN32)
@@ -48,11 +50,13 @@ OneButton button(PIN_INPUT, true);
 #define STATE_IDLE          0
 #define STATE_CONNECTING    1
 #define STATE_CONNECTED     2
-#define STATE_READY         3
 
 #define seconds() (millis()/1000)
 
 static uint8_t state = STATE_IDLE;
+
+static float chronyVBattery;
+static unsigned long chronyVBattLastRead = 0;
 
 // The remote service we wish to connect to.
 static BLEUUID deviceUUID("0000180a-0000-1000-8000-00805f9b34fb");
@@ -73,6 +77,7 @@ static const char * charUUIDs[] = {
 static BLERemoteCharacteristic* pRemoteCharacteristic;
 static BLEAdvertisedDevice* myDevice;
 static BLEClient*  pClient;
+static BLERemoteService* pRemoteService;
 
 static bool renderMenu = false;
 static bool dirty = false;
@@ -119,6 +124,14 @@ void setup() {
   
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, LOW);
+
+#if defined(ARDUINO_heltec_wifi_kit_32)
+  adc1_config_width(ADC_WIDTH_BIT_12);
+  adc1_config_channel_atten(ADC1_CHANNEL_1, ADC_ATTEN_DB_11);
+  esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, ESP_ADC_CAL_VAL_DEFAULT_VREF, &adc_chars);
+  pinMode(21, OUTPUT);
+  digitalWrite(21, LOW);
+#endif
 
 /*
  * Read the Settings, if any setting is out of range
@@ -199,6 +212,16 @@ void doRenderMenu() {
     u8g2.sendBuffer();
 }
 
+#if defined(ARDUINO_heltec_wifi_kit_32)
+void renderDeviceVBatt() {
+    char temp_str[16];
+    uint32_t vbat = esp_adc_cal_raw_to_voltage(analogRead(37), &adc_chars);
+    u8g2.setFont(u8g2_font_5x7_mr);	// 6pt
+    sprintf (temp_str, "D %.1fV", ((float)vbat) * 0.0025);
+    u8g2.drawStr(0, 6, temp_str);
+}
+#endif
+
 #define STR_SEARCHING "Searching"
 
 void renderSearching() {
@@ -212,6 +235,9 @@ void renderSearching() {
   }      
   w = u8g2.getStrWidth(STR_SEARCHING);
   u8g2.drawStr((128-w)/2, 40, temp_str);
+#if defined(ARDUINO_heltec_wifi_kit_32)
+  renderDeviceVBatt();
+#endif
   u8g2.sendBuffer();
   searching_ctr++;
   searching_ctr %= 4;
@@ -280,15 +306,25 @@ bool readChar(BLERemoteService* pRemoteService, int idx, uint8_t * value)
   return true;
 }
 
-bool readBattery(BLERemoteService* pRemoteService){
+void renderChronyVBatt(){
+  uint8_t vb;
+  char temp_str[16];
+  u8g2.setFont(u8g2_font_5x7_mr);	// 6pt
+  sprintf (temp_str, "C %.1fV", chronyVBattery);
+  u8g2_uint_t w = u8g2.getStrWidth(temp_str);
+  u8g2.drawStr(128 - w, 6, temp_str);
+}
+
+
+bool readBattery(){
   uint8_t vb;
   if(!readChar(pRemoteService, 3, &vb)) {
     return false;
   }
-  float vBattery = (vb * 20.0)/1000;
-  Serial.printf(" - Battery %f v\n",vBattery);
+  chronyVBattery = (vb * 20.0)/1000;
   return true;  
 }
+
 
 class MyClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient* pclient) {
@@ -354,7 +390,10 @@ static void notifyCallback(
     sprintf (sbuffer, "Return %d%%", r);
     w = u8g2.getStrWidth(sbuffer);
     u8g2.drawStr((128-w)/2, 60, sbuffer);
-
+#if defined(ARDUINO_heltec_wifi_kit_32)
+    renderDeviceVBatt();
+#endif
+    renderChronyVBatt();
     u8g2.sendBuffer();					
   }
   nc_counter++;
@@ -378,10 +417,9 @@ void connectToChrony() {
   // Connect to the remove BLE Server.
   pClient->connect(myDevice);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
   Serial.println(" - Connected to server");
-  pClient->setMTU(517); //set client to request maximum MTU from server (default is 23 otherwise)
 
   // Obtain a reference to the service we are after in the remote BLE server.
-  BLERemoteService* pRemoteService = pClient->getService(serviceUUID);
+  pRemoteService = pClient->getService(serviceUUID);
   if (pRemoteService == nullptr) {
     Serial.print("Failed to find our service UUID: ");
     Serial.println(serviceUUID.toString().c_str());
@@ -408,14 +446,6 @@ void connectToChrony() {
   }
   Serial.println(" - Profile Set");
 
-  if(!readBattery(pRemoteService)){
-    pClient->disconnect();
-    dirty = true;
-    state = STATE_IDLE;
-    return;
-  }
-
-
   pRemoteCharacteristic = pRemoteService->getCharacteristic(charUUIDs[0]);
   if (pRemoteCharacteristic == nullptr) {
     Serial.print("Failed to find our characteristic UUID: ");
@@ -436,6 +466,9 @@ void connectToChrony() {
     state = STATE_IDLE;
     return;      
   }
+
+  readBattery();
+
   state = STATE_CONNECTED;    
   u8g2.clearBuffer();					// clear the internal memory
   u8g2.sendBuffer();					// transfer internal memory to the display
@@ -484,8 +517,10 @@ void loop() {
       connectToChrony();
       break;
     case STATE_CONNECTED:
-      break;
-    case STATE_READY:
+      if(now - chronyVBattLastRead > 5) {
+        readBattery();
+        chronyVBattLastRead = now;
+      }        
       break;
   }
 }
