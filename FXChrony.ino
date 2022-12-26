@@ -1,17 +1,46 @@
-#include <U8g2lib.h>
 #include "BLEDevice.h"
 #include "OneButton.h"
 #include <EEPROM.h>
 #include <esp_sleep.h>
 #include "esp_adc_cal.h"
 
-#define EEPROM_SIZE 5
+/* Don't mess with this bit unless 
+   you know what you're doing */
+typedef struct pellet {
+  const char * pellet_name;
+  const char * pellet_mfr;
+  float pellet_weight_grains;
+  float pellet_calibre_inch;
+  float pellet_weight_grams;
+  float pellet_calibre_mm;
+} pellet_t;
 
+#define NUM_PELLETS (sizeof(my_pellets)/sizeof(pellet_t))
+/************************************************************************************/
+/* Add your pellets here !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
+/**************************************************************** ********************/
+/* Every row EXCEPT the last one must have a comma at the end. 
+   
+   Format is:
+   
+Name, Manufacturere, weight in grains, calibre in inches, weight in grams, calibre in mm
+*/
+pellet_t my_pellets[] = {
+  {"Diabolo",         "JSB",  8.44,  0.177, 0.547, 4.5},
+  {"Diabolo Monster", "JSB",  13.43, 0.177, 0.87,  4.5}
+};
+/************************************************************************************/
+
+#define EEPROM_SIZE 6
+
+#if defined(ARDUINO_heltec_wifi_kit_32) || defined(ARDUINO_LOLIN32)
+#include <U8g2lib.h>
 #ifdef U8X8_HAVE_HW_SPI
 #include <SPI.h>
 #endif
 #ifdef U8X8_HAVE_HW_I2C
 #include <Wire.h>
+#endif
 #endif
 
 #if defined(ARDUINO_heltec_wifi_kit_32)
@@ -91,13 +120,14 @@ static uint8_t units = UNITS_IMPERIAL;
 static uint8_t profile = PROFILE_AIR_GUN_FAC;
 static uint8_t display_flip = 0;
 static uint8_t power_save_duration = 0;
+static uint8_t pellet_index = 0;
 
 static uint32_t shot_count = 0;
 
 static uint8_t nc_counter = 0;
 
 typedef  void (* menuItemCallback_t)(uint8_t);
-typedef  void (* menuItemGenString_t)(char *);
+typedef  void (* menuItemGenString_t)(uint8_t, char *);
 
 typedef struct menuItem {
     const char * menuString;
@@ -110,6 +140,7 @@ typedef struct menuItem {
     menuItemGenString_t menuItemGenCurSelString;
 } menuItem_t;
 
+static menuItem_t * menu_pellet;
 static menuItem_t * menuStack[4];
 static int menuStackIndex;
 static menuItem_t * pCurrentMenuItem;
@@ -163,17 +194,25 @@ void setup() {
     power_save_duration = 10;
     EEPROM.write(4, power_save_duration);
   }
+  pellet_index = EEPROM.read(5);
+  if(pellet_index >= NUM_PELLETS) {
+    pellet_index = 0;
+    EEPROM.write(5, pellet_index);
+  }
+ 
   EEPROM.commit();
  
   BLEDevice::init("");
- 
+  
+  build_pellet_menu();
+
   u8g2.begin();
   u8g2.setFlipMode(display_flip);
   dirty = true;
 }
 
 void doRenderMenu() {
-    char genHeader[16];
+    char genHeader[256];
     u8g2.clearBuffer();					        // clear the internal memory
     u8g2.setFont(u8g2_font_crox4h_tf);	// 14pt
 
@@ -182,16 +221,21 @@ void doRenderMenu() {
       pHeadertxt = pCurrentMenuItem->menuString;
     } else {
         pHeadertxt = genHeader;
-        pCurrentMenuItem->menuItemGenString(genHeader);
+        pCurrentMenuItem->menuItemGenString(pCurrentMenuItem->currentSubMenu->param, genHeader);
     }
 
     u8g2_uint_t hdr_w = u8g2.getStrWidth(pHeadertxt);
     u8g2.drawStr((128-hdr_w)/2, 16, pHeadertxt);	
 
+    // Pellet names tend to be long :(
+    if(pCurrentMenuItem->subMenu == menu_pellet) {
+      u8g2.setFont(u8g2_font_t0_14_tf);	// 9pt
+    }
+    
     const char * psubHeadertxt = pCurrentMenuItem->currentSubMenu->menuString;
     if(psubHeadertxt == NULL) {
         psubHeadertxt = genHeader;
-        pCurrentMenuItem->currentSubMenu->menuItemGenString(genHeader);
+        pCurrentMenuItem->currentSubMenu->menuItemGenString(pCurrentMenuItem->currentSubMenu->param, genHeader);
     }
 
     hdr_w = u8g2.getStrWidth(psubHeadertxt);
@@ -202,7 +246,7 @@ void doRenderMenu() {
     const char * pcurSelHeadertxt;
     if(pCurrentMenuItem->currentSubMenu->menuItemGenCurSelString) {
         pcurSelHeadertxt = genHeader;
-        pCurrentMenuItem->currentSubMenu->menuItemGenCurSelString(genHeader);
+        pCurrentMenuItem->currentSubMenu->menuItemGenCurSelString(pCurrentMenuItem->currentSubMenu->param, genHeader);
 
         hdr_w = u8g2.getStrWidth(pcurSelHeadertxt);
         u8g2.drawStr((128-hdr_w)/2, 60, pcurSelHeadertxt);
@@ -302,7 +346,6 @@ bool readChar(BLERemoteService* pRemoteService, int idx, uint8_t * value)
     std::string v = pRemoteCharacteristic->readValue();
     *value = v[0];
   }
-  Serial.println(" - Read from characteristic OK");
   return true;
 }
 
@@ -345,7 +388,7 @@ static void notifyCallback(
   size_t length,
   bool isNotify) {
   char sbuffer[16];
-
+  u8g2_uint_t w, h;
   //Serial.print("Notify callback for characteristic ");
   // Third byte is return in steps of 5%, anything better than 10% we display  
   uint8_t r = ((char*)pData)[2] * 5;
@@ -357,18 +400,17 @@ static void notifyCallback(
 
     renderMenu = false;
     shot_count++;    
-    Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
-    Serial.print(" of data length ");
-    Serial.println(length);
-    Serial.print("data: ");
-    Serial.printf("%02X %02X %02X\n",((char*)pData)[0],((char*)pData)[1],((char*)pData)[2]);
+
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_VCR_OSD_tr);
 
     speed = ((char*)pData)[0];
     speed <<= 8;
     speed |= ((char*)pData)[1];
 
+    float energy;
     float fspeed = speed;
-
+    /* Draw the speed string */
     if(units == UNITS_IMPERIAL) {
       fspeed *= 0.0475111859;
       sprintf (sbuffer, "%d FPS", int(fspeed));
@@ -376,20 +418,35 @@ static void notifyCallback(
       fspeed *= 0.014481409;
       sprintf (sbuffer, "%d M/S", int(fspeed));
     }
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_VCR_OSD_tr);
-    u8g2_uint_t w = u8g2.getStrWidth(sbuffer);
+    /* w is the width of the string in pixels for the currently select font */
+    w = u8g2.getStrWidth(sbuffer);
+    /* centre the string horizontally, 27 pixels from the top */
     u8g2.drawStr((128-w)/2, 27, sbuffer);
-    
-    u8g2.setFont(u8g2_font_t0_14_tf);	// 9pt
-    sprintf (sbuffer, "Shot# %d", shot_count);
-    w = u8g2.getStrWidth(sbuffer);
-    u8g2.drawStr((128-w)/2, 45, sbuffer);
 
+    /* Draw the Pellet energy */
+    if(units == UNITS_IMPERIAL) {
+      energy = (my_pellets[pellet_index].pellet_weight_grains * powf(fspeed, 2))/450240;
+      sprintf (sbuffer, "%.2f FPE", energy);
+    } else {
+      energy = 0.5 * (my_pellets[pellet_index].pellet_weight_grams / 100) * powf(fspeed, 2);
+      sprintf (sbuffer, "%.2f J", energy);
+    }
     u8g2.setFont(u8g2_font_t0_14_tf);	// 9pt
-    sprintf (sbuffer, "Return %d%%", r);
     w = u8g2.getStrWidth(sbuffer);
-    u8g2.drawStr((128-w)/2, 60, sbuffer);
+    u8g2.drawStr((128-w)/2, 40, sbuffer);
+
+    u8g2.setFont(u8g2_font_5x7_mr);	// 6pt
+    w = u8g2.getStrWidth(my_pellets[pellet_index].pellet_name);
+    u8g2.drawStr((128-w)/2, 52, my_pellets[pellet_index].pellet_name);
+
+    sprintf (sbuffer, "# %d", shot_count);
+    w = u8g2.getStrWidth(sbuffer);
+    u8g2.drawStr(0, 63, sbuffer);
+
+    sprintf (sbuffer, "R: %d%%", r);
+    w = u8g2.getStrWidth(sbuffer);
+    u8g2.drawStr(128-w, 63, sbuffer);
+
 #if defined(ARDUINO_heltec_wifi_kit_32)
     renderDeviceVBatt();
 #endif
@@ -542,7 +599,7 @@ static menuItem_t menu_sleep[] = {
   { "Zzzz",  NULL, menu_sleep, NULL, NULL, sleepCallback, 0, NULL},
 };
 
-void menuItemGenStringCurSleep(char * buffer)
+void menuItemGenStringCurSleep(uint8_t, char * buffer)
 {
   sprintf(buffer, "[%s]", menu_sleep[0].menuString);
   Serial.println(buffer);  
@@ -568,7 +625,7 @@ static menuItem_t menu_power_save[] = {
   { "10s",  NULL, &menu_power_save[0], NULL, NULL, powerSaveCallback, 3, NULL}
 };
 
-void menuItemGenStringCurPowerSaving(char * buffer)
+void menuItemGenStringCurPowerSaving(uint8_t, char * buffer)
 {
   uint8_t idx = 0;
   switch(power_save_duration)
@@ -596,7 +653,7 @@ static menuItem_t menu_display_flip[] = {
   { "On",          NULL, &menu_display_flip[0], NULL, NULL, displayFlipCallback, DISPLAY_FLIP_ON, NULL}
 };
 
-void menuItemGenStringCurDisplayFlip(char * buffer)
+void menuItemGenStringCurDisplayFlip(uint8_t, char * buffer)
 {
   sprintf(buffer, "[%s]", menu_display_flip[display_flip].menuString);
   Serial.println(buffer);  
@@ -616,7 +673,7 @@ static menuItem_t menu_units[] = {
   { "M/S",          NULL, &menu_units[0], NULL, NULL, unitsCallback, UNITS_METRIC, NULL}
 };
 
-void menuItemGenStringCurSelUnits(char * buffer)
+void menuItemGenStringCurSelUnits(uint8_t, char * buffer)
 {
   sprintf(buffer, "[%s]", menu_units[units].menuString);
   Serial.println(buffer);  
@@ -642,7 +699,7 @@ static menuItem_t menu_profile[] = {
   { "Air Gun FAC",  NULL, &menu_profile[0], NULL, NULL, profileCallback, PROFILE_AIR_GUN_FAC, NULL}
 };
 
-void menuItemGenStringCurSelProfile(char * buffer)
+void menuItemGenStringCurSelProfile(uint8_t, char * buffer)
 {
   sprintf(buffer, "[%s]", menu_profile[profile].menuString);
   Serial.println(buffer);  
@@ -672,28 +729,72 @@ static menuItem_t menu_sensitivity[] = {
   { "Decrease",     NULL, &menu_sensitivity[0], NULL, NULL, sensitivityDecCallback, 0, NULL}
 };
 
-void menuItemGenStringSensitivity(char * buffer)
+void menuItemGenStringSensitivity(uint8_t, char * buffer)
 {
   sprintf(buffer, "%d %%", sensitivity);
   Serial.println(buffer);  
 }
 
-void menuItemGenStringCurSelSensitivity(char * buffer)
+void menuItemGenStringCurSelSensitivity(uint8_t, char * buffer)
 {
   sprintf(buffer, "[%d %%]", sensitivity);
   Serial.println(buffer);  
 }
 
+static void selectPelletCallback(uint8_t param)
+{
+  Serial.printf("selectPelletCallback %d\n",param);  
+  pellet_index = param;
+  EEPROM.write(5, pellet_index);
+  EEPROM.commit();
+  pCurrentMenuItem = menuStack[--menuStackIndex];
+}
+
+void menuItemGenStringPellet(uint8_t i, char * buffer)
+{
+  if(units == UNITS_IMPERIAL) {
+    sprintf(buffer, "%s %.3f %.3f", my_pellets[i].pellet_mfr, my_pellets[i].pellet_weight_grains, my_pellets[i].pellet_calibre_inch);
+  } else {
+    sprintf(buffer, "%s %.3f %.3f", my_pellets[i].pellet_mfr, my_pellets[i].pellet_weight_grams, my_pellets[i].pellet_calibre_mm);
+  }
+  Serial.println(buffer);  
+}
+
+void menuItemGenStringCurSelPellet(uint8_t i, char * buffer)
+{
+  sprintf(buffer, "[%s]",my_pellets[pellet_index].pellet_name);
+  Serial.println(buffer);  
+}
+
 
 static menuItem_t menu_top_level[] = {
-  { "Profile",      NULL, &menu_top_level[1], menu_profile,     menu_profile,     NULL, 0, menuItemGenStringCurSelProfile},
-  { "Min. Return", menuItemGenStringSensitivity, &menu_top_level[2], menu_sensitivity, menu_sensitivity, NULL, 0, menuItemGenStringCurSelSensitivity},
-  { "Units",        NULL, &menu_top_level[3], menu_units,       menu_units,       NULL, 0, menuItemGenStringCurSelUnits},
-  { "Display Flip", NULL, &menu_top_level[4], menu_display_flip,menu_display_flip,NULL, 0, menuItemGenStringCurDisplayFlip},
-  { "Power Save",   NULL, &menu_top_level[5], menu_power_save, menu_power_save,  NULL, 0, menuItemGenStringCurPowerSaving},
-  { "Sleep",        NULL, &menu_top_level[0], menu_sleep,      menu_sleep,        NULL, 0, menuItemGenStringCurSleep}
-  
+  { "Profile",      NULL,                         &menu_top_level[1], menu_profile,     menu_profile,     NULL, 0, menuItemGenStringCurSelProfile},
+  { "Pellet",       NULL,                         &menu_top_level[2], NULL,             NULL,             NULL, 0, menuItemGenStringCurSelPellet},
+  { "Min. Return",  menuItemGenStringSensitivity, &menu_top_level[3], menu_sensitivity, menu_sensitivity, NULL, 0, menuItemGenStringCurSelSensitivity},
+  { "Units",        NULL,                         &menu_top_level[4], menu_units,       menu_units,       NULL, 0, menuItemGenStringCurSelUnits},
+  { "Display Flip", NULL,                         &menu_top_level[5], menu_display_flip,menu_display_flip,NULL, 0, menuItemGenStringCurDisplayFlip},
+  { "Power Save",   NULL,                         &menu_top_level[6], menu_power_save,  menu_power_save,  NULL, 0, menuItemGenStringCurPowerSaving},
+  { "Sleep",        NULL,                         &menu_top_level[0], menu_sleep,       menu_sleep,       NULL, 0, menuItemGenStringCurSleep}
 };
+
+
+void build_pellet_menu()
+{
+  uint8_t i;
+  menu_pellet = (menuItem_t *)malloc(NUM_PELLETS * sizeof(menuItem_t));
+  for(i=0;i<NUM_PELLETS;i++) {
+    menu_pellet[i].menuString = my_pellets[i].pellet_name;
+    menu_pellet[i].menuItemGenString = NULL;
+    menu_pellet[i].nextMenuItem = ((i == NUM_PELLETS - 1) ? &menu_pellet[0] : &menu_pellet[i+1]);
+    menu_pellet[i].currentSubMenu = NULL;
+    menu_pellet[i].subMenu = NULL;
+    menu_pellet[i].menuItemCallback = selectPelletCallback;
+    menu_pellet[i].param = i;
+    menu_pellet[i].menuItemGenCurSelString = menuItemGenStringPellet;
+  }
+  menu_top_level[1].currentSubMenu = menu_pellet;
+  menu_top_level[1].subMenu = menu_pellet;
+}
 
 static menuItem_t menu_entry = {  "Settings", NULL, menu_top_level, menu_top_level, NULL, NULL, 0, NULL };
 
