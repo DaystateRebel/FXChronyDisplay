@@ -74,7 +74,8 @@ OneButton button(PIN_INPUT, true);
 #define DISPLAY_FLIP_ON     1
 #define DISPLAY_FLIP_MAX    1
 
-#define SENSITIVITY_MAX     100
+#define SENSITIVITY_MAX     
+
 
 #define STATE_IDLE          0
 #define STATE_CONNECTING    1
@@ -428,7 +429,7 @@ static void notifyCallback(
       energy = (my_pellets[pellet_index].pellet_weight_grains * powf(fspeed, 2))/450240;
       sprintf (sbuffer, "%.2f FPE", energy);
     } else {
-      energy = 0.5 * (my_pellets[pellet_index].pellet_weight_grams / 100) * powf(fspeed, 2);
+      energy = 0.5 * (my_pellets[pellet_index].pellet_weight_grams / 1000) * powf(fspeed, 2);
       sprintf (sbuffer, "%.2f J", energy);
     }
     u8g2.setFont(u8g2_font_t0_14_tf);	// 9pt
