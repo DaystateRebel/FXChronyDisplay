@@ -74,7 +74,7 @@ OneButton button(PIN_INPUT, true);
 #define DISPLAY_FLIP_ON     1
 #define DISPLAY_FLIP_MAX    1
 
-#define SENSITIVITY_MAX     
+#define SENSITIVITY_MAX     100
 
 
 #define STATE_IDLE          0
