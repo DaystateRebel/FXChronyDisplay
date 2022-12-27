@@ -6,28 +6,65 @@
 
 /* Don't mess with this bit unless 
    you know what you're doing */
+
+typedef struct gun {
+  const char * gun_name;
+  const char * gun_mfr;
+  float gun_caliber_inch;
+  float gun_caliber_mm;
+  uint8_t gun_profile;
+} gun_t;
+
 typedef struct pellet {
   const char * pellet_name;
   const char * pellet_mfr;
   float pellet_weight_grains;
-  float pellet_calibre_inch;
+  float pellet_caliber_inch;
   float pellet_weight_grams;
-  float pellet_calibre_mm;
+  float pellet_caliber_mm;
 } pellet_t;
 
 #define NUM_PELLETS (sizeof(my_pellets)/sizeof(pellet_t))
+#define NUM_GUNS    (sizeof(my_guns)/sizeof(gun_t))         // Lots!
+
 /************************************************************************************/
 /* Add your pellets here !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
-/**************************************************************** ********************/
+/************************************************************************************/
 /* Every row EXCEPT the last one must have a comma at the end. 
    
    Format is:
    
-Name, Manufacturere, weight in grains, calibre in inches, weight in grams, calibre in mm
+Name, Manufacturer, weight in grains, caliber in inches, weight in grams, caliber in mm
 */
 pellet_t my_pellets[] = {
   {"Diabolo",         "JSB",  8.44,  0.177, 0.547, 4.5},
-  {"Diabolo Monster", "JSB",  13.43, 0.177, 0.87,  4.5}
+  {"Field Tgt Trophy","H&N",  14.66, 0.22,  0.95,  5.5},
+  {"Diabolo Monster", "JSB",  13.43, 0.177, 0.87,  4.5},
+  {"King Hvy MkII",   "JSB",  33.95, 0.25,  2.2,   6.35},
+  {"Slug",            "NSA",  33.5,  0.25,  0,     0}
+};
+/************************************************************************************/
+
+#define PROFILE_BOW_AIRSOFT 0
+#define PROFILE_CO2_PISTOL  1
+#define PROFILE_AIR_PISTOL  2
+#define PROFILE_AIR_GUN_UK  3
+#define PROFILE_AIR_GUN_FAC 4
+
+/************************************************************************************/
+/* Add your guns here !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
+/************************************************************************************/
+/* Every row EXCEPT the last one must have a comma at the end. 
+   
+   Format is:
+   
+Name, Manufacturer, caliber in inches, caliber in mm, profile (speed range)
+*/
+gun_t my_guns[] = {
+  {"2240",    "Crosman",  0.22,  5.5, PROFILE_CO2_PISTOL},
+  {"Pulsar",  "Daystate", 0.177, 4.5, PROFILE_AIR_GUN_FAC},
+  {"Leshiy2", "Ed Gun",   0.25,  6.35,PROFILE_AIR_GUN_FAC},
+  {"Red Wolf","Daystate", 0.25,  6.35, PROFILE_AIR_GUN_FAC}
 };
 /************************************************************************************/
 
@@ -62,13 +99,6 @@ OneButton button(PIN_INPUT, true);
 #define UNITS_IMPERIAL  0
 #define UNITS_METRIC    1
 #define UNITS_MAX       1
-
-#define PROFILE_BOW_AIRSOFT 0
-#define PROFILE_CO2_PISTOL  1
-#define PROFILE_AIR_PISTOL  2
-#define PROFILE_AIR_GUN_UK  3
-#define PROFILE_AIR_GUN_FAC 4
-#define PROFILE_MAX         4
 
 #define DISPLAY_FLIP_OFF    0
 #define DISPLAY_FLIP_ON     1
@@ -122,9 +152,9 @@ static uint8_t profile = PROFILE_AIR_GUN_FAC;
 static uint8_t display_flip = 0;
 static uint8_t power_save_duration = 0;
 static uint8_t pellet_index = 0;
+static uint8_t gun_index = 0;
 
 static uint32_t shot_count = 0;
-
 static uint8_t nc_counter = 0;
 
 typedef  void (* menuItemCallback_t)(uint8_t);
@@ -141,7 +171,8 @@ typedef struct menuItem {
     menuItemGenString_t menuItemGenCurSelString;
 } menuItem_t;
 
-static menuItem_t * menu_pellet;
+static menuItem_t * menu_gun = NULL;
+static menuItem_t * menu_pellet = NULL;
 static menuItem_t * menuStack[4];
 static int menuStackIndex;
 static menuItem_t * pCurrentMenuItem;
@@ -180,10 +211,10 @@ void setup() {
     units = UNITS_MAX;
     EEPROM.write(1, units);
   }
-  profile = EEPROM.read(2);
-  if(profile > PROFILE_MAX) {
-    profile = PROFILE_MAX;
-    EEPROM.write(2, profile);
+  gun_index = EEPROM.read(2);
+  if(gun_index > NUM_GUNS) {
+    gun_index = 0;
+    EEPROM.write(2, gun_index);    
   }
   display_flip = EEPROM.read(3);
   if(display_flip > DISPLAY_FLIP_MAX) {
@@ -205,7 +236,7 @@ void setup() {
  
   BLEDevice::init("");
   
-  build_pellet_menu();
+  build_gun_menu();
 
   u8g2.begin();
   u8g2.setFlipMode(display_flip);
@@ -388,10 +419,9 @@ static void notifyCallback(
   uint8_t* pData,
   size_t length,
   bool isNotify) {
-  char sbuffer[16];
+  char sbuffer[256];
   u8g2_uint_t w, h;
-  //Serial.print("Notify callback for characteristic ");
-  // Third byte is return in steps of 5%, anything better than 10% we display  
+  // Third byte is return in steps of 5%
   uint8_t r = ((char*)pData)[2] * 5;
   uint16_t speed;    
   if((r >= sensitivity) && !renderMenu) {
@@ -437,8 +467,10 @@ static void notifyCallback(
     u8g2.drawStr((128-w)/2, 40, sbuffer);
 
     u8g2.setFont(u8g2_font_5x7_mr);	// 6pt
-    w = u8g2.getStrWidth(my_pellets[pellet_index].pellet_name);
-    u8g2.drawStr((128-w)/2, 52, my_pellets[pellet_index].pellet_name);
+        
+    sprintf(sbuffer, "%s / %s", my_guns[gun_index].gun_name, my_pellets[pellet_index].pellet_name);
+    w = u8g2.getStrWidth(sbuffer);
+    u8g2.drawStr((128-w)/2, 52, sbuffer);
 
     sprintf (sbuffer, "# %d", shot_count);
     w = u8g2.getStrWidth(sbuffer);
@@ -603,7 +635,6 @@ static menuItem_t menu_sleep[] = {
 void menuItemGenStringCurSleep(uint8_t, char * buffer)
 {
   sprintf(buffer, "[%s]", menu_sleep[0].menuString);
-  Serial.println(buffer);  
 }
 
 static const uint8_t power_save_duration_lut[] = {0,2,5,10};
@@ -615,7 +646,6 @@ static void powerSaveCallback(uint8_t param)
     EEPROM.write(4, power_save_duration);
     EEPROM.commit();
   }  
-  Serial.printf("Menu Item Selected PWR SAVE %d\n", power_save_duration);
   pCurrentMenuItem = menuStack[--menuStackIndex];
 }
 
@@ -636,7 +666,6 @@ void menuItemGenStringCurPowerSaving(uint8_t, char * buffer)
     case 10: idx = 3;  break;
   }  
   sprintf(buffer, "[%s]", menu_power_save[idx].menuString);
-  Serial.println(buffer);  
 }
 
 static void displayFlipCallback(uint8_t param)
@@ -644,7 +673,6 @@ static void displayFlipCallback(uint8_t param)
   display_flip = param;
   EEPROM.write(3, display_flip);
   EEPROM.commit();
-  Serial.printf("Menu Item Selected DISPLAY_FLIP %d\n", display_flip);
   u8g2.setFlipMode(display_flip);
   pCurrentMenuItem = menuStack[--menuStackIndex];
 }
@@ -657,7 +685,6 @@ static menuItem_t menu_display_flip[] = {
 void menuItemGenStringCurDisplayFlip(uint8_t, char * buffer)
 {
   sprintf(buffer, "[%s]", menu_display_flip[display_flip].menuString);
-  Serial.println(buffer);  
 }
 
 static void unitsCallback(uint8_t param)
@@ -665,7 +692,6 @@ static void unitsCallback(uint8_t param)
   units = param;
   EEPROM.write(1, units);
   EEPROM.commit();
-  Serial.printf("Menu Item Selected UNITS %d\n", units);
   pCurrentMenuItem = menuStack[--menuStackIndex];
 }
 
@@ -677,33 +703,6 @@ static menuItem_t menu_units[] = {
 void menuItemGenStringCurSelUnits(uint8_t, char * buffer)
 {
   sprintf(buffer, "[%s]", menu_units[units].menuString);
-  Serial.println(buffer);  
-}
-
-static void profileCallback(uint8_t param)
-{
-  if(profile != param) {
-    profile = param;
-    EEPROM.write(2, profile);
-    EEPROM.commit();
-    profile_changed = true;
-  }  
-  Serial.printf("Menu Item Selected PROFILE %d\n", profile);
-  pCurrentMenuItem = menuStack[--menuStackIndex];
-}
-
-static menuItem_t menu_profile[] = {
-  { "Bow/Airsoft",  NULL, &menu_profile[1], NULL, NULL, profileCallback, PROFILE_BOW_AIRSOFT, NULL},
-  { "CO2 Pistol",   NULL, &menu_profile[2], NULL, NULL, profileCallback, PROFILE_CO2_PISTOL, NULL},
-  { "Air Pistol",   NULL, &menu_profile[3], NULL, NULL, profileCallback, PROFILE_AIR_PISTOL, NULL},
-  { "Air Gun UK",   NULL, &menu_profile[4], NULL, NULL, profileCallback, PROFILE_AIR_GUN_UK, NULL},
-  { "Air Gun FAC",  NULL, &menu_profile[0], NULL, NULL, profileCallback, PROFILE_AIR_GUN_FAC, NULL}
-};
-
-void menuItemGenStringCurSelProfile(uint8_t, char * buffer)
-{
-  sprintf(buffer, "[%s]", menu_profile[profile].menuString);
-  Serial.println(buffer);  
 }
 
 static void sensitivityIncCallback(uint8_t param)
@@ -712,7 +711,6 @@ static void sensitivityIncCallback(uint8_t param)
     sensitivity += 5;
     EEPROM.write(0, sensitivity);
     EEPROM.commit();
-    Serial.printf("Menu Item Selected SENSITIVITY INC %d\n", sensitivity);
   }
 }
 static void sensitivityDecCallback(uint8_t param)
@@ -721,7 +719,6 @@ static void sensitivityDecCallback(uint8_t param)
     sensitivity -= 5;
     EEPROM.write(0, sensitivity);
     EEPROM.commit();
-    Serial.printf("Menu Item Selected SENSITIVITY DEC %d\n", sensitivity);
   }
 }
 
@@ -733,18 +730,15 @@ static menuItem_t menu_sensitivity[] = {
 void menuItemGenStringSensitivity(uint8_t, char * buffer)
 {
   sprintf(buffer, "%d %%", sensitivity);
-  Serial.println(buffer);  
 }
 
 void menuItemGenStringCurSelSensitivity(uint8_t, char * buffer)
 {
   sprintf(buffer, "[%d %%]", sensitivity);
-  Serial.println(buffer);  
 }
 
 static void selectPelletCallback(uint8_t param)
 {
-  Serial.printf("selectPelletCallback %d\n",param);  
   pellet_index = param;
   EEPROM.write(5, pellet_index);
   EEPROM.commit();
@@ -754,22 +748,47 @@ static void selectPelletCallback(uint8_t param)
 void menuItemGenStringPellet(uint8_t i, char * buffer)
 {
   if(units == UNITS_IMPERIAL) {
-    sprintf(buffer, "%s %.3f %.3f", my_pellets[i].pellet_mfr, my_pellets[i].pellet_weight_grains, my_pellets[i].pellet_calibre_inch);
+    sprintf(buffer, "%s %.3f %.3f", my_pellets[i].pellet_mfr, my_pellets[i].pellet_weight_grains, my_pellets[i].pellet_caliber_inch);
   } else {
-    sprintf(buffer, "%s %.3f %.3f", my_pellets[i].pellet_mfr, my_pellets[i].pellet_weight_grams, my_pellets[i].pellet_calibre_mm);
+    sprintf(buffer, "%s %.3f %.3f", my_pellets[i].pellet_mfr, my_pellets[i].pellet_weight_grams, my_pellets[i].pellet_caliber_mm);
   }
-  Serial.println(buffer);  
 }
 
 void menuItemGenStringCurSelPellet(uint8_t i, char * buffer)
 {
   sprintf(buffer, "[%s]",my_pellets[pellet_index].pellet_name);
-  Serial.println(buffer);  
+}
+
+static void selectGunCallback(uint8_t param)
+{
+  gun_index = param;
+  EEPROM.write(2, gun_index);
+  pCurrentMenuItem = menuStack[--menuStackIndex];
+  build_pellet_menu();
+  pellet_index = menu_pellet[0].param;
+  EEPROM.write(5, pellet_index);
+  EEPROM.commit();
+  profile_changed = true;
+}
+
+void menuItemGenStringGun(uint8_t i, char * buffer)
+{
+  if(units == UNITS_IMPERIAL) {
+    sprintf(buffer, "%s %.3f", my_guns[i].gun_mfr, my_guns[i].gun_caliber_inch);
+  } else {
+    sprintf(buffer, "%s %.3f", my_guns[i].gun_mfr, my_guns[i].gun_caliber_mm);
+  }
+}
+
+void menuItemGenStringCurSelGun(uint8_t i, char * buffer)
+{
+  sprintf(buffer, "[%s]",my_guns[gun_index].gun_name);
 }
 
 
+
 static menuItem_t menu_top_level[] = {
-  { "Profile",      NULL,                         &menu_top_level[1], menu_profile,     menu_profile,     NULL, 0, menuItemGenStringCurSelProfile},
+  { "Gun",          NULL,                         &menu_top_level[1], NULL,             NULL,             NULL, 0, menuItemGenStringCurSelGun},
   { "Pellet",       NULL,                         &menu_top_level[2], NULL,             NULL,             NULL, 0, menuItemGenStringCurSelPellet},
   { "Min. Return",  menuItemGenStringSensitivity, &menu_top_level[3], menu_sensitivity, menu_sensitivity, NULL, 0, menuItemGenStringCurSelSensitivity},
   { "Units",        NULL,                         &menu_top_level[4], menu_units,       menu_units,       NULL, 0, menuItemGenStringCurSelUnits},
@@ -778,30 +797,80 @@ static menuItem_t menu_top_level[] = {
   { "Sleep",        NULL,                         &menu_top_level[0], menu_sleep,       menu_sleep,       NULL, 0, menuItemGenStringCurSleep}
 };
 
+bool is_pellet_for_gun(uint8_t pidx)
+{
+  bool result = false;
+
+  if (units == UNITS_IMPERIAL) {
+    result = ((my_pellets[pidx].pellet_caliber_inch != 0) && (my_guns[gun_index].gun_caliber_inch != 0)) && (my_pellets[pidx].pellet_caliber_inch == my_guns[gun_index].gun_caliber_inch);    
+  } else {
+    result = ((my_pellets[pidx].pellet_caliber_mm != 0) && (my_guns[gun_index].gun_caliber_mm != 0)) && (my_pellets[pidx].pellet_caliber_mm == my_guns[gun_index].gun_caliber_mm);
+  }
+  return result;
+}
+
+uint8_t num_pellets_for_gun()
+{
+  uint8_t i, pcnt = 0;
+  for(i=0;i<NUM_PELLETS;i++) {
+    if(is_pellet_for_gun(i)) {
+      pcnt += 1;
+    }
+  }
+  return pcnt;
+}
 
 void build_pellet_menu()
 {
-  uint8_t i;
-  menu_pellet = (menuItem_t *)malloc(NUM_PELLETS * sizeof(menuItem_t));
+  uint8_t i, npellets, nctr = 0;
+  if(menu_pellet) {
+    free(menu_pellet);
+  }
+  npellets = num_pellets_for_gun();
+
+  menu_pellet = (menuItem_t *)malloc(npellets * sizeof(menuItem_t));
+  
   for(i=0;i<NUM_PELLETS;i++) {
-    menu_pellet[i].menuString = my_pellets[i].pellet_name;
-    menu_pellet[i].menuItemGenString = NULL;
-    menu_pellet[i].nextMenuItem = ((i == NUM_PELLETS - 1) ? &menu_pellet[0] : &menu_pellet[i+1]);
-    menu_pellet[i].currentSubMenu = NULL;
-    menu_pellet[i].subMenu = NULL;
-    menu_pellet[i].menuItemCallback = selectPelletCallback;
-    menu_pellet[i].param = i;
-    menu_pellet[i].menuItemGenCurSelString = menuItemGenStringPellet;
+    if(is_pellet_for_gun(i)) {
+      menu_pellet[nctr].menuString = my_pellets[i].pellet_name;
+      menu_pellet[nctr].menuItemGenString = NULL;
+      menu_pellet[nctr].nextMenuItem = ((nctr == npellets - 1) ? &menu_pellet[0] : &menu_pellet[nctr+1]);
+      menu_pellet[nctr].currentSubMenu = NULL;
+      menu_pellet[nctr].subMenu = NULL;
+      menu_pellet[nctr].menuItemCallback = selectPelletCallback;
+      menu_pellet[nctr].param = i;
+      menu_pellet[nctr].menuItemGenCurSelString = menuItemGenStringPellet;
+      nctr += 1;
+    }
   }
   menu_top_level[1].currentSubMenu = menu_pellet;
   menu_top_level[1].subMenu = menu_pellet;
+}
+
+//Name, Manufacturer, caliber in inches, caliber in mm, profile (speed range)
+void build_gun_menu()
+{
+  uint8_t i;
+  menu_gun = (menuItem_t *)malloc(NUM_GUNS * sizeof(menuItem_t));
+  for(i=0;i<NUM_GUNS;i++) {
+    menu_gun[i].menuString = my_guns[i].gun_name;
+    menu_gun[i].menuItemGenString = NULL;
+    menu_gun[i].nextMenuItem = ((i == NUM_GUNS - 1) ? &menu_gun[0] : &menu_gun[i+1]);
+    menu_gun[i].currentSubMenu = NULL;
+    menu_gun[i].subMenu = NULL;
+    menu_gun[i].menuItemCallback = selectGunCallback;
+    menu_gun[i].param = i;
+    menu_gun[i].menuItemGenCurSelString = menuItemGenStringGun;
+  }
+  menu_top_level[0].currentSubMenu = menu_gun;
+  menu_top_level[0].subMenu = menu_gun;
+  build_pellet_menu();
 }
 
 static menuItem_t menu_entry = {  "Settings", NULL, menu_top_level, menu_top_level, NULL, NULL, 0, NULL };
 
 void singleClick()
 {
-  Serial.println("x1");
   if(renderMenu)
   {
     dirty = true;
@@ -828,7 +897,6 @@ void doubleClick()
           pCurrentMenuItem = pCurrentMenuItem->currentSubMenu;
       }
   }
-  Serial.printf("x2 %d\n",menuStackIndex);
 }
 
 void longPressStop()
@@ -851,8 +919,8 @@ void longPressStop()
     dirty = true;
     renderMenu = true;
     pCurrentMenuItem = &menu_entry;
+    menu_entry.currentSubMenu = menu_top_level;
     menuStackIndex = 0;
     menuStack[menuStackIndex++] = pCurrentMenuItem;
   }
-  Serial.printf("LPS %s %d\n",renderMenu ? "Menu On" : "Menu Off", menuStackIndex);
 }
