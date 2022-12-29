@@ -148,7 +148,6 @@ static uint8_t searching_ctr = 0;
 
 static uint8_t sensitivity = 50;
 static uint8_t units = UNITS_IMPERIAL;
-static uint8_t profile = PROFILE_AIR_GUN_FAC;
 static uint8_t display_flip = 0;
 static uint8_t power_save_duration = 0;
 static uint8_t pellet_index = 0;
@@ -520,14 +519,14 @@ void connectToChrony() {
   }
   Serial.println(" - Found our service");
 
-  if(!writeChar(pRemoteService, 2, profile_bytes[0][profile]))
+  if(!writeChar(pRemoteService, 2, profile_bytes[0][my_guns[gun_index].gun_profile]))
   {
     pClient->disconnect();
     dirty = true;
     state = STATE_IDLE;
     return;
   }
-  if(!writeChar(pRemoteService, 4, profile_bytes[1][profile]))
+  if(!writeChar(pRemoteService, 4, profile_bytes[1][my_guns[gun_index].gun_profile]))
   {
     pClient->disconnect();
     dirty = true;
