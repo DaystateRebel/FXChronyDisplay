@@ -158,7 +158,6 @@ static uint8_t display_flip = 0;
 static uint8_t power_save_duration = 0;
 static uint8_t gun_index = 0;
 
-static uint32_t shot_count = 0;
 static uint8_t nc_counter = 0;
 
 typedef  void (* menuItemCallback_t)(uint8_t);
@@ -478,7 +477,6 @@ static void notifyCallback(
     power_saving = false;
 
     renderMenu = false;
-    shot_count++;    
 
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_VCR_OSD_tr);
@@ -522,7 +520,7 @@ static void notifyCallback(
 
     add_shot(gun_index, fspeed);
 
-    sprintf (sbuffer, "# %d/%d", shot_count, my_guns[gun_index].shot_string_length);
+    sprintf (sbuffer, "# %d/%d", get_string_length(gun_index), my_guns[gun_index].shot_string_length);
     w = u8g2.getStrWidth(sbuffer);
     u8g2.drawStr(0, 63, sbuffer);
 
