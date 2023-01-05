@@ -13,6 +13,7 @@ typedef struct gun {
   float gun_caliber_inch;
   float gun_caliber_mm;
   uint8_t gun_profile;
+  uint8_t shot_string_length;
 } gun_t;
 
 typedef struct pellet {
@@ -26,6 +27,13 @@ typedef struct pellet {
 
 #define NUM_PELLETS (sizeof(my_pellets)/sizeof(pellet_t))
 #define NUM_GUNS    (sizeof(my_guns)/sizeof(gun_t))         // Lots!
+
+#define MAX_SHOT_STRING_LENGTH  20
+// [0] = shot string length
+// [1] = pellet_idx
+// SHOT_STRING_LENGTH * shots
+#define EEPROM_PER_GUN (MAX_SHOT_STRING_LENGTH * sizeof(float) + 2)
+#define EEPROM_SIZE (6 + EEPROM_PER_GUN * NUM_GUNS)
 
 /************************************************************************************/
 /* Add your pellets here !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
@@ -61,19 +69,12 @@ pellet_t my_pellets[] = {
 Name, Manufacturer, caliber in inches, caliber in mm, profile (speed range)
 */
 gun_t my_guns[] = {
-  {"2240",    "Crosman",  0.22,  5.5, PROFILE_CO2_PISTOL},
-  {"Pulsar",  "Daystate", 0.177, 4.5, PROFILE_AIR_GUN_FAC},
-  {"Leshiy2", "Ed Gun",   0.25,  6.35,PROFILE_AIR_GUN_FAC},
-  {"Red Wolf","Daystate", 0.25,  6.35, PROFILE_AIR_GUN_FAC}
+  {"2240",    "Crosman",  0.22,  5.5, PROFILE_CO2_PISTOL,   20},
+  {"Pulsar",  "Daystate", 0.177, 4.5, PROFILE_AIR_GUN_FAC,  10},
+  {"Leshiy2", "Ed Gun",   0.25,  6.35,PROFILE_AIR_GUN_FAC,  8},
+  {"Red Wolf","Daystate", 0.25,  6.35, PROFILE_AIR_GUN_FAC,  10}
 };
 /************************************************************************************/
-
-#define SHOT_STRING_LENGTH  20
-// [0] = shot string length
-// [1] = pellet_idx
-// SHOT_STRING_LENGTH * shots
-#define EEPROM_PER_GUN (SHOT_STRING_LENGTH * sizeof(float) + 2)
-#define EEPROM_SIZE (6 + EEPROM_PER_GUN * NUM_GUNS)
 
 #if defined(ARDUINO_heltec_wifi_kit_32) || defined(ARDUINO_LOLIN32)
 #include <U8g2lib.h>
@@ -280,15 +281,15 @@ float get_shot(uint8_t gidx, uint8_t sidx) {
   return result;
 }
 
-bool add_shot(uint8_t gidx, float speed) {
+void add_shot(uint8_t gidx, float speed) {
   uint8_t sidx = get_string_length(gidx);
-  if(sidx < SHOT_STRING_LENGTH) {
-    EEPROM.put(6 + (gidx * EEPROM_PER_GUN) + sidx * sizeof(float) + 2, speed);
-    EEPROM.write(6 + (gidx * EEPROM_PER_GUN), sidx + 1);
-    EEPROM.commit();
-    return true;
+  if(sidx >= my_guns[gun_index].shot_string_length) {
+    clear_string(gidx);
+    sidx = 0;
   }
-  return false;
+  EEPROM.put(6 + (gidx * EEPROM_PER_GUN) + sidx * sizeof(float) + 2, speed);
+  EEPROM.write(6 + (gidx * EEPROM_PER_GUN), sidx + 1);
+  EEPROM.commit();
 }
 
 uint8_t get_pellet_index(uint8_t gidx) 
@@ -521,7 +522,7 @@ static void notifyCallback(
 
     add_shot(gun_index, fspeed);
 
-    sprintf (sbuffer, "# %d/%d", shot_count, SHOT_STRING_LENGTH);
+    sprintf (sbuffer, "# %d/%d", shot_count, my_guns[gun_index].shot_string_length);
     w = u8g2.getStrWidth(sbuffer);
     u8g2.drawStr(0, 63, sbuffer);
 
